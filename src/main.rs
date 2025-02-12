@@ -6,7 +6,7 @@ mod polyalphabetic;
 use clap::{Arg, Command};
 
 fn main() -> std::io::Result<()> {
-    let matches = Command::new("cipher_test")
+    let matches = Command::new("cipher")
         .version("0.1.0")
         .about("A simple cipher tool")
         .subcommand(
