@@ -1,7 +1,8 @@
 use crate::cipher::Cipher;
+use log::{error, info, warn};
 use rand::{Rng, rng, seq::SliceRandom};
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 
@@ -21,8 +22,31 @@ impl Rotor {
         self.order.shuffle(&mut rng());
     }
 
-    fn set_order(&mut self, order_vec: Vec<usize>) {
+    fn set_order(&mut self, alphabet: &str, order_vec: Vec<usize>) -> io::Result<()> {
+        // 检查密码本长度
+        if order_vec.len() != alphabet.len() - 1 {
+            warn!(
+                "Invalid order vector length. Expected: {}, Found: {}. Order vector: {:?}",
+                alphabet.len() - 1,
+                order_vec.len(),
+                order_vec
+            );
+        }
+
+        // 检查密码本中是否存在重复元素
+        let mut seen = HashSet::new();
+        for &item in &order_vec {
+            if seen.contains(&item) {
+                warn!(
+                    "Duplicate element found in order vector. Order vector: {:?}",
+                    order_vec
+                );
+            }
+            seen.insert(item);
+        }
+
         self.order = order_vec;
+        Ok(())
     }
 
     fn generate_cursor(&mut self) -> () {
@@ -74,7 +98,13 @@ impl<'a> EnigmaMachine<'a> {
         };
 
         let _ = enigma.set_reflector(reflector_from, alphabet, reflector_file);
-        let _ = enigma.set_rotors(rotor_num, passwords_file, rotors_cursor_file, rotors_from);
+        let _ = enigma.set_rotors(
+            alphabet,
+            rotor_num,
+            passwords_file,
+            rotors_cursor_file,
+            rotors_from,
+        );
         let _ = enigma.set_plugboard(plugboard_file);
 
         enigma
@@ -87,8 +117,10 @@ impl<'a> EnigmaMachine<'a> {
         reflector_file: &str,
     ) -> io::Result<()> {
         if reflector_from == "m" {
+            info!("Creating reflector and save it to: {}", reflector_from);
             self.create_reflector(alphabet, reflector_file)?;
         } else {
+            info!("Reading reflector from: {}", reflector_from);
             self.load_reflector(reflector_file)?;
         }
 
@@ -138,15 +170,18 @@ impl<'a> EnigmaMachine<'a> {
 
     fn set_rotors(
         &mut self,
+        alphabet: &str,
         rotor_num: usize,
         passwords_file: &str,
         rotors_cursor_file: &str,
         rotors_from: &str,
     ) -> io::Result<()> {
         if rotors_from == "m" {
+            info!("Creating rotors and save them to {passwords_file} and {rotors_cursor_file}");
             self.generate_rotors(passwords_file, rotors_cursor_file)?;
         } else {
-            self.load_rotors(rotor_num, passwords_file, rotors_cursor_file)?;
+            info!("Setting rotors from {passwords_file} and {rotors_cursor_file}");
+            self.load_rotors(alphabet, rotor_num, passwords_file, rotors_cursor_file)?;
         }
 
         Ok(())
@@ -174,6 +209,7 @@ impl<'a> EnigmaMachine<'a> {
 
     fn load_rotors(
         &mut self,
+        alphabet: &str,
         rotor_num: usize,
         passwords_file: &str,
         rotors_cursor_file: &str,
@@ -187,6 +223,20 @@ impl<'a> EnigmaMachine<'a> {
                     .expect("Failed to parse order")
             })
             .collect();
+
+        // 检查每个 Vec<usize> 的长度是否一致
+        let expected_length = passwords[0].len();
+        for (i, order_vec) in passwords.iter().enumerate() {
+            if order_vec.len() != expected_length {
+                warn!(
+                    "Inconsistent order vector length for rotor {}. Expected: {}, Found: {}. Order vector: {:?}",
+                    i + 1,
+                    expected_length,
+                    order_vec.len(),
+                    order_vec
+                );
+            }
+        }
 
         let rotors_cursor_file = File::open(rotors_cursor_file)?;
         let cursors_reader = BufReader::new(rotors_cursor_file);
@@ -207,7 +257,7 @@ impl<'a> EnigmaMachine<'a> {
         }
 
         for i in 0..rotor_num {
-            self.rotors[i].set_order(passwords[i].clone());
+            self.rotors[i].set_order(alphabet, passwords[i].clone())?;
             self.rotors[i].set_cursor(cursors[i])?;
         }
 
@@ -217,8 +267,10 @@ impl<'a> EnigmaMachine<'a> {
     fn set_plugboard(&mut self, plugboard_file: &str) -> io::Result<()> {
         let file = File::open(plugboard_file)?;
         let reader = BufReader::new(file);
+
         for line in reader.lines() {
-            if let Some((left, right)) = line?.split_once('-') {
+            let line = line?;
+            if let Some((left, right)) = line.split_once('-') {
                 let left = left
                     .trim()
                     .chars()
@@ -235,6 +287,30 @@ impl<'a> EnigmaMachine<'a> {
                         io::Error::new(io::ErrorKind::InvalidData, "Invalid plugboard format")
                     })?
                     .to_ascii_uppercase();
+
+                // 检查重复键
+                if self.plugboard.contains_key(&left) {
+                    error!(
+                        "Duplicate key found in plugboard: {}. Key already exists.",
+                        left
+                    );
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Duplicate key in plugboard",
+                    ));
+                }
+
+                // 检查重复值
+                if self.plugboard.values().any(|&v| v == right) {
+                    error!(
+                        "Duplicate value found in plugboard: {}. Value already exists.",
+                        right
+                    );
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Duplicate value in plugboard",
+                    ));
+                }
 
                 self.plugboard.insert(left, right);
                 self.plugboard.insert(right, left);
@@ -256,6 +332,8 @@ impl<'a> EnigmaMachine<'a> {
     pub fn encrypt(&mut self) -> std::io::Result<()> {
         self.base.get_text()?;
         self.base.clean_text();
+
+        info!("Encrypting text...");
 
         let plain_text: Vec<char> = self.base.plain_text.chars().collect();
         for c in plain_text {
@@ -284,10 +362,98 @@ impl<'a> EnigmaMachine<'a> {
 
     pub fn link_and_move_rotors(&mut self, i: usize) -> std::io::Result<()> {
         self.rotors[i].step();
+        info!("Rotor {i} Stepped");
         if self.rotors[i].cursor == 0 && i < self.rotors.len() - 1 {
+            info!("Linking rotor {} to rotor {}", i, i + 1);
             self.link_and_move_rotors(i + 1)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod reflector_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn test_reflector(alphabet: &str, reflector: &HashMap<char, char>) {
+        // 检查反射器的键值对数量
+        assert_eq!(alphabet.len(), reflector.len(), "Reflector size mismatch");
+
+        // 检查反射器的对称性
+        for (key, value) in reflector {
+            assert_eq!(
+                reflector.get(value).unwrap(),
+                key,
+                "Reflector symmetry mismatch"
+            );
+        }
+
+        // 检查反射器中是否有重复的键或值
+        let keys: Vec<char> = reflector.keys().cloned().collect();
+        let values: Vec<char> = reflector.values().cloned().collect();
+
+        // 检查是否有重复的键
+        assert_eq!(
+            keys.len(),
+            keys.iter().collect::<std::collections::HashSet<_>>().len(),
+            "Duplicate keys found in reflector"
+        );
+
+        // 检查是否有重复的值
+        assert_eq!(
+            values.len(),
+            values
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            "Duplicate values found in reflector"
+        );
+    }
+
+    #[test]
+    fn test_create_reflector() {
+        use tempfile::NamedTempFile;
+
+        let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let input_file = NamedTempFile::new().expect("Failed to create temporary input file");
+        let reflector_file_path = input_file.path();
+
+        let enigma = EnigmaMachine::new(
+            alphabet,
+            "input.txt",
+            "output.txt",
+            reflector_file_path.to_str().unwrap(),
+            3,
+            "passwords.txt",
+            "rotors_cursor.txt",
+            "plugboard.txt",
+            "m", // 手动创建反射器
+            "M",
+        );
+
+        test_reflector(alphabet, &enigma.reflector);
+    }
+
+    #[test]
+    fn test_load_reflector() {
+        let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let reflector_file = "reflector.txt";
+
+        let enigma = EnigmaMachine::new(
+            alphabet,
+            "input.txt",
+            "output.txt",
+            reflector_file,
+            3,
+            "passwords.txt",
+            "rotors_cursor.txt",
+            "plugboard.txt",
+            "M", // 读取反射器
+            "M",
+        );
+
+        test_reflector(alphabet, &enigma.reflector);
     }
 }
 
@@ -324,9 +490,12 @@ mod rotor_tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use log::info;
 
     #[test]
     fn test_full_encryption() {
+        env_logger::init();
+
         let mut enigma = EnigmaMachine::new(
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
             "input.txt",
@@ -343,7 +512,19 @@ mod integration_tests {
         enigma.encrypt().unwrap();
 
         // 验证输出文件内容
+        let input = std::fs::read_to_string("input.txt").expect("Failed to read output file");
         let output = std::fs::read_to_string("output.txt").expect("Failed to read output file");
+        info!("Input: {}", input);
+        info!("Output: {}", output);
         assert_eq!(output.trim(), "UDMHSOPVKJ");
+
+        let mut have_same_char: bool = false;
+        for (c_in, c_out) in input.chars().zip(output.chars()) {
+            if c_in == c_out {
+                have_same_char = true;
+                break;
+            }
+        }
+        assert!(!have_same_char, "It is not a Enigma!");
     }
 }
