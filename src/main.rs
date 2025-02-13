@@ -6,9 +6,11 @@ mod polyalphabetic;
 use clap::{Arg, Command};
 
 fn main() -> std::io::Result<()> {
+    let alphabet: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
     let matches = Command::new("cipher")
         .version("0.1.0")
-        .about("A simple cipher tool")
+        .about("A multi-functional cipher tool")
         .subcommand(
             Command::new("caesar")
                 .about("Caesar cipher")
@@ -54,7 +56,8 @@ fn main() -> std::io::Result<()> {
                     Arg::new("rotor_num")
                         .short('n')
                         .long("rotor_num")
-                        .default_value("3"),
+                        .default_value("3")
+                        .value_parser(clap::value_parser!(usize)),
                 )
                 .arg(
                     Arg::new("passwords_file")
@@ -73,7 +76,6 @@ fn main() -> std::io::Result<()> {
                 )
                 .arg(
                     Arg::new("reflector_from")
-                        .short('r')
                         .long("reflector_from")
                         .default_value("M"),
                 )
@@ -87,44 +89,65 @@ fn main() -> std::io::Result<()> {
 
     match matches.subcommand() {
         Some(("caesar", sub_matches)) => {
-            let input = sub_matches.get_one::<String>("input").unwrap();
-            let output = sub_matches.get_one::<String>("output").unwrap();
-            let shift = *sub_matches.get_one::<i32>("shift").unwrap();
-            let mut cipher =
-                caesar::CaesarCipher::new("ABCDEFGHIJKLMNOPQRSTUVWXYZ", input, output, shift);
+            let input = sub_matches
+                .get_one::<String>("input")
+                .expect("Input file is required");
+            let output = sub_matches
+                .get_one::<String>("output")
+                .expect("Output file is required");
+            let shift = *sub_matches
+                .get_one::<i32>("shift")
+                .expect("Shift value is required");
+            let mut cipher = caesar::CaesarCipher::new(alphabet, input, output, shift);
             cipher.encrypt()
         }
         Some(("poly", sub_matches)) => {
-            let input = sub_matches.get_one::<String>("input").unwrap();
-            let output = sub_matches.get_one::<String>("output").unwrap();
-            let keyword = sub_matches.get_one::<String>("keyword").unwrap();
+            let input = sub_matches
+                .get_one::<String>("input")
+                .expect("Input file is required");
+            let output = sub_matches
+                .get_one::<String>("output")
+                .expect("Output file is required");
+            let keyword = sub_matches
+                .get_one::<String>("keyword")
+                .expect("Keyword is required");
             let decrypt = sub_matches.get_flag("decrypt");
             let mut cipher = polyalphabetic::PolyalphabeticCipher::new(
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-                input,
-                output,
-                keyword,
-                decrypt,
+                alphabet, input, output, keyword, decrypt,
             );
             cipher.encrypt()
         }
         Some(("enigma", sub_matches)) => {
-            let input = sub_matches.get_one::<String>("input").unwrap();
-            let output = sub_matches.get_one::<String>("output").unwrap();
-            let reflector_from = sub_matches.get_one::<String>("reflector_from").unwrap();
-            let reflector_file = sub_matches.get_one::<String>("reflector_file").unwrap();
-            let rotor_num: usize = sub_matches
-                .get_one::<String>("rotor_num")
-                .unwrap()
-                .parse()
-                .unwrap();
-            let rotors_from = sub_matches.get_one::<String>("rotors_from").unwrap();
-            let passwords_file = sub_matches.get_one::<String>("passwords_file").unwrap();
-            let rotors_cursor_file = sub_matches.get_one::<String>("rotors_cursor_file").unwrap();
-            let plugboard_file = sub_matches.get_one::<String>("plugboard_file").unwrap();
+            let input = sub_matches
+                .get_one::<String>("input")
+                .expect("Input file is required");
+            let output = sub_matches
+                .get_one::<String>("output")
+                .expect("Output file is required");
+            let reflector_from = sub_matches
+                .get_one::<String>("reflector_from")
+                .expect("Reflector from value is required");
+            let reflector_file = sub_matches
+                .get_one::<String>("reflector_file")
+                .expect("Reflector file is required");
+            let rotor_num = *sub_matches
+                .get_one::<usize>("rotor_num")
+                .expect("Rotor number is required");
+            let rotors_from = sub_matches
+                .get_one::<String>("rotors_from")
+                .expect("Rotors from value is required");
+            let passwords_file = sub_matches
+                .get_one::<String>("passwords_file")
+                .expect("Passwords file is required");
+            let rotors_cursor_file = sub_matches
+                .get_one::<String>("rotors_cursor_file")
+                .expect("Rotors cursor file is required");
+            let plugboard_file = sub_matches
+                .get_one::<String>("plugboard_file")
+                .expect("Plugboard file is required");
 
             let mut enigma = enigma::EnigmaMachine::new(
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                alphabet,
                 input,
                 output,
                 reflector_file,

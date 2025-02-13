@@ -1,19 +1,19 @@
 use std::fs;
 
-pub struct Cipher {
-    pub alphabet: String,
-    pub input_file: String,
-    pub output_file: String,
+pub struct Cipher<'a> {
+    pub alphabet: &'a str,
+    pub input_file: &'a str,
+    pub output_file: &'a str,
     pub plain_text: String,
     pub encrypted_text: String,
 }
 
-impl Cipher {
-    pub fn new(alphabet: &str, input_file: &str, output_file: &str) -> Self {
+impl<'a> Cipher<'a> {
+    pub fn new(alphabet: &'a str, input_file: &'a str, output_file: &'a str) -> Self {
         Cipher {
-            alphabet: alphabet.to_string(),
-            input_file: input_file.to_string(),
-            output_file: output_file.to_string(),
+            alphabet,
+            input_file,
+            output_file,
             plain_text: String::new(),
             encrypted_text: String::new(),
         }
@@ -28,8 +28,7 @@ impl Cipher {
         self.plain_text = self
             .plain_text
             .chars()
-            .filter(|c| c.is_ascii_alphabetic())
-            .map(|c| c.to_ascii_uppercase())
+            .filter(|c| self.alphabet.contains(*c))
             .collect();
     }
 

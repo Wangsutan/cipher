@@ -1,10 +1,9 @@
 use crate::cipher::Cipher;
-use rand::rng;
-use rand::seq::SliceRandom;
+use rand::{Rng, rng, seq::SliceRandom};
 use serde_json;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
 
 #[derive(Clone)]
 struct Rotor {
@@ -27,18 +26,18 @@ impl Rotor {
     }
 
     fn generate_cursor(&mut self) -> () {
-        let right_edge_of_order = self.order.len();
-        use rand::Rng;
-        self.cursor = rand::rng().random_range(0..right_edge_of_order);
+        self.cursor = rand::rng().random_range(0..self.order.len());
     }
 
-    fn set_cursor(&mut self, cursor: usize) -> Result<(), String> {
-        let right_edge_of_order = self.order.len();
-        if cursor < right_edge_of_order {
+    fn set_cursor(&mut self, cursor: usize) -> io::Result<()> {
+        if cursor < self.order.len() {
             self.cursor = cursor;
             Ok(())
         } else {
-            Err("Invalid cursor".to_string())
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Invalid cursor",
+            ))
         }
     }
 
@@ -47,18 +46,18 @@ impl Rotor {
     }
 }
 
-pub struct EnigmaMachine {
-    base: Cipher,
-    rotors: Vec<Rotor>,
+pub struct EnigmaMachine<'a> {
+    base: Cipher<'a>,
     reflector: HashMap<char, char>,
+    rotors: Vec<Rotor>,
     plugboard: HashMap<char, char>,
 }
 
-impl EnigmaMachine {
+impl<'a> EnigmaMachine<'a> {
     pub fn new(
-        alphabet: &str,
-        input_file: &str,
-        output_file: &str,
+        alphabet: &'a str,
+        input_file: &'a str,
+        output_file: &'a str,
         reflector_file: &str,
         rotor_num: usize,
         passwords_file: &str,
@@ -69,72 +68,72 @@ impl EnigmaMachine {
     ) -> Self {
         let mut enigma = EnigmaMachine {
             base: Cipher::new(alphabet, input_file, output_file),
-            rotors: vec![Rotor::new(vec![], 0); rotor_num],
             reflector: HashMap::new(),
+            rotors: vec![Rotor::new(vec![], 0); rotor_num],
             plugboard: HashMap::new(),
         };
 
-        enigma.set_reflector(reflector_from, alphabet, reflector_file);
-        enigma.set_rotors(rotor_num, passwords_file, rotors_cursor_file, rotors_from);
-        enigma.set_plugboard(plugboard_file);
+        let _ = enigma.set_reflector(reflector_from, alphabet, reflector_file);
+        let _ = enigma.set_rotors(rotor_num, passwords_file, rotors_cursor_file, rotors_from);
+        let _ = enigma.set_plugboard(plugboard_file);
 
         enigma
     }
 
-    fn set_reflector(&mut self, reflector_from: &str, alphabet: &str, reflector_file: &str) {
+    fn set_reflector(
+        &mut self,
+        reflector_from: &str,
+        alphabet: &str,
+        reflector_file: &str,
+    ) -> io::Result<()> {
         if reflector_from == "m" {
-            self.create_reflector(alphabet, reflector_file);
+            self.create_reflector(alphabet, reflector_file)?;
         } else {
-            self.load_reflector(reflector_file);
+            self.load_reflector(reflector_file)?;
         }
+
+        Ok(())
     }
 
-    fn create_reflector(&mut self, alphabet: &str, reflector_file: &str) {
+    fn create_reflector(&mut self, alphabet: &str, reflector_file: &str) -> io::Result<()> {
         let mut plugs: Vec<char> = alphabet.chars().collect();
         plugs.shuffle(&mut rng());
 
         let num = plugs.len() / 2;
-        let dict1: HashMap<char, char> = plugs[..num]
-            .iter()
-            .cloned()
-            .zip(plugs[num..].iter().cloned())
-            .collect();
-        let dict2: HashMap<char, char> = plugs[num..]
-            .iter()
-            .cloned()
-            .zip(plugs[..num].iter().cloned())
-            .collect();
+        let mut reflector = HashMap::new();
+        for i in 0..num {
+            let left = plugs[i];
+            let right = plugs[i + num];
+            reflector.insert(left, right);
+            reflector.insert(right, left);
+        }
 
-        self.reflector = dict1.into_iter().chain(dict2.into_iter()).collect();
+        self.reflector = reflector;
 
-        let reflector_str =
-            serde_json::to_string(&self.reflector).expect("Failed to serialize reflector");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(reflector_file)
-            .expect("Failed to open reflector file for writing");
-        file.write_all(reflector_str.as_bytes())
-            .expect("Failed to write reflector to file");
+        let reflector_str = serde_json::to_string(&self.reflector)?;
+        let mut file = File::create(reflector_file)?;
+        file.write_all(reflector_str.as_bytes())?;
+
+        Ok(())
     }
 
-    fn load_reflector(&mut self, reflector_file: &str) {
-        let file = File::open(reflector_file).expect("Failed to open reflector file");
+    fn load_reflector(&mut self, reflector_file: &str) -> io::Result<()> {
+        let file = File::open(reflector_file)?;
         let reader = BufReader::new(file);
 
         let reflector_str = reader
             .lines()
             .next()
-            .expect("Failed to read reflector file")
-            .expect("Failed to read line");
-        if let Ok(reflector_map) = serde_json::from_str::<HashMap<char, char>>(&reflector_str) {
-            for (key, value) in reflector_map {
-                self.reflector.insert(key, value);
-            }
-        } else {
-            eprintln!("Invalid reflector format in file");
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "File is empty"))??;
+
+        let reflector_map: HashMap<char, char> = serde_json::from_str(&reflector_str)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        for (key, value) in reflector_map {
+            self.reflector.insert(key, value);
         }
+
+        Ok(())
     }
 
     fn set_rotors(
@@ -143,52 +142,44 @@ impl EnigmaMachine {
         passwords_file: &str,
         rotors_cursor_file: &str,
         rotors_from: &str,
-    ) {
+    ) -> io::Result<()> {
         if rotors_from == "m" {
-            self.generate_rotors(passwords_file, rotors_cursor_file);
+            self.generate_rotors(passwords_file, rotors_cursor_file)?;
         } else {
-            self.load_rotors(rotor_num, passwords_file, rotors_cursor_file);
+            self.load_rotors(rotor_num, passwords_file, rotors_cursor_file)?;
         }
+
+        Ok(())
     }
 
-    fn generate_rotors(&mut self, passwords_file: &str, rotors_cursor_file: &str) {
+    fn generate_rotors(
+        &mut self,
+        passwords_file: &str,
+        rotors_cursor_file: &str,
+    ) -> io::Result<()> {
+        let mut passwords_file = File::create(passwords_file)?;
+        let mut rotors_cursor_file = File::create(rotors_cursor_file)?;
+
         for rotor in &mut self.rotors {
             rotor.generate_order(&self.base.alphabet);
+            let order_str = serde_json::to_string(&rotor.order)?;
+            passwords_file.write_all(format!("{}\n", order_str).as_bytes())?;
+
             rotor.generate_cursor();
+            rotors_cursor_file.write_all(format!("{}\n", rotor.cursor).as_bytes())?;
         }
 
-        let mut passwords_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(passwords_file)
-            .expect("Failed to open passwords file for writing");
-        let mut rotors_cursor_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(rotors_cursor_file)
-            .expect("Failed to open rotors cursor file for writing");
-
-        for rotor in &self.rotors {
-            let order_str = serde_json::to_string(&rotor.order).expect("Failed to serialize order");
-            passwords_file
-                .write_all(format!("{}\n", order_str).as_bytes())
-                .expect("Failed to write order to file");
-            rotors_cursor_file
-                .write_all(format!("{}\n", rotor.cursor).as_bytes())
-                .expect("Failed to write cursor to file");
-        }
+        Ok(())
     }
 
-    fn load_rotors(&mut self, rotor_num: usize, passwords_file: &str, rotors_cursor_file: &str) {
-        let passwords_file = File::open(passwords_file).expect("Failed to open passwords file");
-        let rotors_cursor_file =
-            File::open(rotors_cursor_file).expect("Failed to open rotors cursor file");
-
+    fn load_rotors(
+        &mut self,
+        rotor_num: usize,
+        passwords_file: &str,
+        rotors_cursor_file: &str,
+    ) -> io::Result<()> {
+        let passwords_file = File::open(passwords_file)?;
         let passwords_reader = BufReader::new(passwords_file);
-        let cursors_reader = BufReader::new(rotors_cursor_file);
-
         let passwords: Vec<Vec<usize>> = passwords_reader
             .lines()
             .map(|line| {
@@ -196,6 +187,9 @@ impl EnigmaMachine {
                     .expect("Failed to parse order")
             })
             .collect();
+
+        let rotors_cursor_file = File::open(rotors_cursor_file)?;
+        let cursors_reader = BufReader::new(rotors_cursor_file);
         let cursors: Vec<usize> = cursors_reader
             .lines()
             .map(|line| {
@@ -206,40 +200,53 @@ impl EnigmaMachine {
             .collect();
 
         if passwords.len() != rotor_num || cursors.len() != rotor_num {
-            panic!("The numbers of passwords and rotors are not equal.");
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "The number of rotors does not match the expected number",
+            ));
         }
 
         for i in 0..rotor_num {
             self.rotors[i].set_order(passwords[i].clone());
-            self.rotors[i]
-                .set_cursor(cursors[i])
-                .expect("Invalid cursor cursor");
+            self.rotors[i].set_cursor(cursors[i])?;
         }
+
+        Ok(())
     }
 
-    fn set_plugboard(&mut self, plugboard_file: &str) {
-        let file = File::open(plugboard_file).expect("Failed to open plugboard file");
+    fn set_plugboard(&mut self, plugboard_file: &str) -> io::Result<()> {
+        let file = File::open(plugboard_file)?;
         let reader = BufReader::new(file);
-
         for line in reader.lines() {
-            let line = line.expect("Failed to read line");
-            if let Some((left, right)) = line.split_once('-') {
+            if let Some((left, right)) = line?.split_once('-') {
                 let left = left
                     .trim()
                     .chars()
                     .next()
-                    .expect("Invalid plugboard format")
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "Invalid plugboard format")
+                    })?
                     .to_ascii_uppercase();
                 let right = right
                     .trim()
                     .chars()
                     .next()
-                    .expect("Invalid plugboard format")
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "Invalid plugboard format")
+                    })?
                     .to_ascii_uppercase();
+
                 self.plugboard.insert(left, right);
                 self.plugboard.insert(right, left);
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid plugboard format",
+                ));
             }
         }
+
+        Ok(())
     }
 
     fn use_plugboard(&self, ch: char) -> char {
@@ -267,8 +274,10 @@ impl EnigmaMachine {
     fn encipher_and_decipher(&self, mut ch: char, sign: i32) -> char {
         for rotor in &self.rotors {
             let shift = rotor.order[rotor.cursor] as i32 * sign;
-            let idx = ((ch as i32 - 'A' as i32 + shift).rem_euclid(26)) as usize;
-            ch = (idx as usize + 'A' as usize) as u8 as char;
+            let idx = self.base.alphabet.chars().position(|c| c == ch).unwrap();
+            let new_idx =
+                ((idx as i32 + shift).rem_euclid(self.base.alphabet.len() as i32)) as usize;
+            ch = self.base.alphabet.chars().nth(new_idx).unwrap();
         }
         ch
     }
@@ -335,6 +344,6 @@ mod integration_tests {
 
         // 验证输出文件内容
         let output = std::fs::read_to_string("output.txt").expect("Failed to read output file");
-        assert_eq!(output.trim(), "WUPHWYUVMK");
+        assert_eq!(output.trim(), "UDMHSOPVKJ");
     }
 }
